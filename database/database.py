@@ -32,23 +32,39 @@ class ASHPitem:
 
 class ChangeTrk:
     def __init__(self):
-        self._getlocallist(self)
-        self._getlivelist(self)
-        self.local_list = []
-        self.live_list = []
-        self.new_shortages = None
-        self.resolved_shortages = None
-        self._compare_previous()
+        global local_list
+        local_list = self._getlocallist(self)
+        global live_list
+        live_list = self._getlivelist(self)
+        global local_ids
+        local_ids = self._getlocalids()
+        global online_ids
+        online_ids = self._getonlineids()
+        global new_shortages
+        self.new_shortages = self.findnewshorts()
+        global resolved_shortages
+        self.resolved_shortages = self.findoldshorts()
+        global save
+        save = []
+        global remove
+        remove = []
+        
+        if self.resolved_shortages:
+            self.remove_resolved()
+        if self.new_shortages:
+            self.add_new()
+        
+        self._update_db()
 
     def _getlocallist(self, local_list):
         db_path = config["DB_FILE"]
         database = ShortageDB.read(self, db_path)
         local_list = []
+        local_item = []
         for item in database:
-            local_list.append(ASHPitem(
-                name = item["drugname"],
-                ashp_id = item["ashp_id"]
-            ))
+            local_item = {"ashp_id": item["ashp_id"], "drugname": item["drugname"], "detailurl": item["detailurl"]}
+            local_list.append(local_item)
+        return local_list
 
     def _getlivelist(self, live_list):
         logging.basicConfig(level=logging.INFO, format='%(asctime)s : %(levelname)s : %(message)s')
@@ -62,35 +78,76 @@ class ChangeTrk:
             exit()
         
         live_list = []
+        active_shortage = []
         soup = BeautifulSoup(online_shortage_list.content, 'html.parser')
         for link in soup.find(id='1_dsGridView').find_all('a'):
-            idregex = re.search("id=[0-9][0-9]?[0-9]?[0-9]?", str(link))
-            idnumber = re.sub("id=", "", idregex.string)
-            live_list.append(ASHPitem(
-                name=link.get_text(),
-                detailurl=link.get('href'),
-                ashp_id = idnumber
-            ))
+            idregex = re.search("id=\d+", str(link))
+            idnumber = re.search("\d+", idregex.group())
+            active_shortage = {"ashp_id": int(idnumber.group()), "drugname": link.get_text(), "detailurl": link.get('href')}
+            live_list.append(active_shortage)
+        return live_list
 
-    def _compare_previous(self):
-        online_ids = [drug.ashp_id for drug in self.live_list]
-        local_ids = [drug.ashp_id for drug in self.local_list]
+    def _getonlineids(self):
+        online_ids = []
+        for i in range(len(live_list)):
+            item = live_list[i]
+            liveid = item["ashp_id"]
+            online_ids.append(liveid)
+        return online_ids
         
-        self.new_shortages = [x for x in self.live_list if x.ashp_id not in local_ids]
-        self.resolved_shortages = [x for x in self.local_list if x.ashp_id not in online_ids]
+    def _getlocalids(self):
+        local_ids = []
+        for i in range(len(local_list)):
+            item = local_list[i]
+            localid = item["ashp_id"]
+            local_ids.append(localid)
+        return local_ids
         
-    def update_db(self):
-        db_path = config.DB_FILE
-        database = ShortageDB(self, db_path)
-        delete_ids = [item.ashp_id for item in self.resolved_shortages]
-        for rem in delete_ids:
-            for item in database:
-                if item.ashp_id == rem:
-                    del item
-        add_drugs = [item for item in self.new_shortages]
-        saving = []
-        for item in database:
-            saving.append({"ashp_id": item.ashp_id, "drugname": item.name},)
-        for add in add_drugs:
-            database.append({"ashp_id": add_drugs.ashp_id, "drugname": add_drugs.drugname})
-        ShortageDB.store(saving)
+    def findnewshorts(self):    
+        global new_shortages
+        new_shortages = []
+        for i in range(len(live_list)):
+            item = live_list[i]
+            tempid = item["ashp_id"]
+            if tempid not in local_ids:
+                new_shortages.append(item)
+        return new_shortages
+        
+    def findoldshorts(self):    
+        global resolved_shortages
+        resolved_shortages = []
+        for i in range(len(local_list)):
+            item = local_list[i]
+            tempid = item["ashp_id"]
+            if tempid not in online_ids:
+                resolved_shortages.append(tempid)
+        return resolved_shortages
+
+    def remove_resolved(self):
+        global remove
+        remove = []
+        db_path = config["DB_FILE"]
+        database = ShortageDB.read(self, db_path)
+        for i in range(len(database)):
+            item = database[i]
+            tempid = item["ashp_id"]
+            for j in range(len(resolved_shortages)):
+                if tempid in resolved_shortages:
+                    remove.append(tempid)
+                    database.pop(j)
+                else:
+                    save.append(item)
+
+    def add_new(self):
+        for i in range(len(new_shortages)):
+            item = new_shortages[i]
+            save.append(item)
+
+    def _update_db(self):
+        #first add all old ones not yet resolved back, then save it all again.
+        db_path = config["DB_FILE"]
+        database = ShortageDB.read(self, db_path)
+        for i in range(len(database)):
+            item = database[i]
+            save.append(item)
+        ShortageDB.store(self, db_path, save)
